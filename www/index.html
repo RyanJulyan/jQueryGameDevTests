@@ -1,0 +1,1038 @@
+<html>
+	<head>
+		<title>Jump'n'run</title>
+        <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.7.2/jquery.min.js"></script>
+		<script>
+        gf = {
+    baseRate: 30,
+    width: 640,
+    height: 480,
+    time: 0,
+    baseDiv: $()
+};
+
+gf.initialize = function(options) {
+    $.extend(gf, options);
+}
+
+/**
+ * Animation Object.
+ **/
+gf.animation = function(options) {
+    var defaultValues = {
+        url : false,
+        width : 64,
+        numberOfFrames : 1,
+        currentFrame : 0,
+        rate : 1,
+        offsetx: 0,
+        offsety: 0
+    }
+    $.extend(this, defaultValues, options);
+    if(options.rate){
+        // normalize the animation rate
+        this.rate = Math.round(this.rate / gf.baseRate);
+    }
+    if(this.url){
+        gf.addImage(this.url);
+    }
+}
+
+/**
+ * This function sets the current frame.
+ **/
+gf.setFrame = function(div, animation) {
+    div.css("backgroundPosition", "" + (-animation.currentFrame * animation.width - animation.offsetx) + "px "+(-animation.offsety)+"px");
+}
+
+gf.animations = [];
+
+/**
+ * Sets the animation for the given sprite.
+ **/
+gf.setAnimation = function(div, animation, loop, callback){
+    var animate = {
+        animation: $.extend({}, animation),
+        div: div,
+        loop: loop,
+        callback: callback,
+        counter: 0
+    }
+    
+    if(animation.url){
+        div.css("backgroundImage","url('"+animation.url+"')");
+    }
+    
+    // search if this div already has an animation
+    var divFound = false;
+    for (var i = 0; i < gf.animations.length; i++) {
+        if(gf.animations[i].div.is(div)){
+            divFound = true;
+            gf.animations[i] = animate;
+        }
+    }
+    
+    // otherwise we add it to the array
+    if(!divFound) {
+        gf.animations.push(animate);
+    }
+    
+    gf.setFrame(div, animation);
+}
+
+/**
+ * This function adds a sprite the div defined by the fir'st argument
+ **/
+gf.spriteFragment = $("<div class='gf_sprite' style='position: absolute; overflow: hidden;'></div>");
+gf.addSprite = function(parent, divId, options){
+    var options = $.extend({
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+        flipH: false,
+		flipV: false,
+		rotate: 0,
+		scale: 1
+    }, options);
+    var sprite = gf.spriteFragment.clone().css({
+            left:   options.x,
+            top:    options.y,
+            width:  options.width,
+            height: options.height}).attr("id",divId).data("gf",options);
+    parent.append(sprite);
+    return sprite;
+}
+
+/**
+ * This function adds a sprite the div defined by the fir'st argument
+ **/
+gf.groupFragment = $("<div class='gf_group' style='position: absolute; overflow: visible;'></div>");
+gf.addGroup = function(parent, divId, options){
+    var options = $.extend({
+        x: 0,
+        y: 0,
+        flipH: false,
+		flipV: false,
+		rotate: 0,
+		scale: 1
+    }, options);
+    var group = gf.groupFragment.clone().css({
+            left:   options.x,
+            top:    options.y}).attr("id",divId).data("gf",options);
+    parent.append(group);
+    return group;
+}
+
+
+gf.intersect = function(a1,a2,b1,b2){
+    var i1 = Math.min(Math.max(a1, b1), a2);
+    var i2 = Math.max(Math.min(a2, b2), a1);
+    return [i1, i2];
+} 
+/**
+ * This function returns the indexes coresponding to the given box in the tilemap.
+ */
+gf.tilemapBox = function(tilemapOptions, boxOptions){
+    var tmX  = tilemapOptions.x;
+    var tmXW = tilemapOptions.x + tilemapOptions.width * tilemapOptions.tileWidth;
+    var tmY  = tilemapOptions.y;
+    var tmYH = tilemapOptions.y + tilemapOptions.height * tilemapOptions.tileHeight;
+    
+    var bX  = boxOptions.x;
+    var bXW = boxOptions.x + boxOptions.width;
+    var bY  = boxOptions.y;
+    var bYH = boxOptions.y + boxOptions.height;
+    
+    var x = gf.intersect(tmX,tmXW, bX, bXW);
+    var y = gf.intersect(tmY, tmYH, bY, bYH);
+    
+    return {
+        x1: Math.floor((x[0] - tilemapOptions.x) / tilemapOptions.tileWidth),
+        y1: Math.floor((y[0] - tilemapOptions.y) / tilemapOptions.tileHeight),
+        x2: Math.ceil((x[1] - tilemapOptions.x) / tilemapOptions.tileWidth),
+        y2: Math.ceil((y[1] - tilemapOptions.y) / tilemapOptions.tileHeight)
+    }
+}
+
+gf.offset = function(div){
+	var options = div.data("gf");
+	var x = options.x;
+	var y = options.y;
+	
+	var parent = $(div.parent());
+	options = parent.data("gf");
+	while (!parent.is(gf.baseDiv) && options !== undefined){
+		x += options.x;
+		y += options.y;
+		parent = $(parent.parent());
+		options = parent.data("gf");
+	}
+	return {x: x, y: y};
+}
+
+gf.tilemapFragment = $("<div class='gf_tilemap' style='position: absolute'></div>");
+gf.addTilemap = function(parent, divId, options){
+    var options = $.extend({
+        x: 0,
+        y: 0,
+        tileWidth: 64,
+        tileHeight: 64,
+        width: 0,
+        height: 0,
+        map: [],
+        animations: [],
+        logic: false
+    }, options);
+    
+    var tilemap = gf.tilemapFragment.clone().attr("id",divId).data("gf",options);
+    
+    if (!options.logic){
+    	
+	    // find the visible part
+	    var offset = gf.offset(parent);
+	    var visible = gf.tilemapBox(options, {
+	    	x:      -options.x - offset.x,
+	    	y:      -options.x - offset.y,
+	    	width:  gf.baseDiv.width(),
+	    	height: gf.baseDiv.height()
+	    });
+	   	options.visible = visible;
+	    
+	    //create line and row fragment:
+	    for (var i=visible.y1; i < visible.y2; i++){
+	        for(var j=visible.x1; j < visible.x2; j++) {
+	            var animationIndex = options.map[i][j];
+	            
+	            if(animationIndex > 0){
+	                var tileOptions = {
+	                    x: options.x + j*options.tileWidth,
+	                    y: options.y + i*options.tileHeight,
+	                    width: options.tileWidth,
+	                    height: options.tileHeight
+	                }
+	                var tile = gf.spriteFragment.clone().css({
+	                    left:   tileOptions.x,
+	                    top:    tileOptions.y,
+	                    width:  tileOptions.width,
+	                    height: tileOptions.height}
+	                ).addClass("gf_line_"+i).addClass("gf_column_"+j).data("gf", tileOptions);
+	                
+	                gf.setAnimation(tile, options.animations[animationIndex-1]);
+	                
+	                tilemap.append(tile);
+	            }
+	        }
+	    }
+    }
+    parent.append(tilemap);
+    return tilemap;
+}
+
+gf.importTiled = function(url, parent, divIdPrefix){
+	var animations = [];
+	var tilemaps = [];
+	
+	$.ajax({
+		url: url,
+		async: false,
+		dataType: 'json',
+		success: function(json){
+		    var tilesetGID = [];
+            for (var i = 0; i < json.tilesets.length; i++) {
+                tilesetGID[i] = json.tilesets[i].firstgid;
+            } 
+            
+            var getTilesetIndex = function(index){
+                var i = 0;
+                while(index >= tilesetGID[i] && i < tilesetGID.length){
+                    i++;
+                }
+                return i-1;
+            }
+    
+			var height = json.height;
+			var width  = json.width;
+			var tileHeight = json.tileheight; 
+			var tileWidth  = json.tilewidth;
+			
+			var layers = json.layers;
+			var usedTiles = [];
+			var animationCounter = 0;
+			var tilemapArrays = [];
+			
+			// Detect which animations we need to generate
+			// and convert the tiles array indexes to the new ones
+			for (var i=0; i < layers.length; i++){
+				if(layers[i].type === "tilelayer"){
+					var tilemapArray = new Array(height);
+					for (var j=0; j<height; j++){
+						tilemapArray[j] = new Array(width);
+					}
+					for (var j=0; j < layers[i].data.length; j++){
+						var tile = layers[i].data[j];
+						if(tile === 0){
+							tilemapArray[Math.floor(j / width)][j % width] = 0;
+						} else if(layers[i].name === "logic") {
+						    tilemapArray[Math.floor(j / width)][j % width] = tile - tilesetGID[getTilesetIndex(tile)] + 1;
+						}else {
+							if(!usedTiles[tile]){
+								animationCounter++;
+								usedTiles[tile] = animationCounter;
+								animations.push(new gf.animation({
+									url: json.tilesets[getTilesetIndex(tile)].image,
+									offsetx: ((tile-1) % Math.floor(json.tilesets[getTilesetIndex(tile)].imagewidth / tileWidth)) * tileWidth,
+									offsety: Math.floor((tile-1) / Math.floor(json.tilesets[getTilesetIndex(tile)].imagewidth / tileWidth)) * tileHeight
+								}));
+							}
+							tilemapArray[Math.floor(j / width)][j % width] = usedTiles[tile];
+						}
+					}
+					tilemapArrays.push(tilemapArray);
+				}
+			}
+			// adding the tilemaps
+			for (var i=0; i<tilemapArrays.length; i++){
+				tilemaps.push(gf.addTilemap(parent, divIdPrefix+i, {
+					x:          0,
+					y:          0,
+					tileWidth:  tileWidth,
+					tileHeight: tileHeight,
+					width:      width,
+					height:     height,
+					map:        tilemapArrays[i],
+					animations: animations,
+					logic: (layers[i].name === "logic")
+				}));
+			}
+		}
+	});
+	
+	return {
+		animations: animations,
+		tilemaps: tilemaps
+	}
+}
+
+var createTile = function(div, i,j,options){
+	var animationIndex = options.map[i][j];
+	if(animationIndex > 0 && div.find(".gf_line_"+i+".gf_column_"+j).size() === 0){
+    	var tileOptions = {
+            x: options.x + j*options.tileWidth,
+            y: options.y + i*options.tileHeight,
+            width: options.tileWidth,
+            height: options.tileHeight
+        }
+        var tile = gf.spriteFragment.clone().css({
+            left:   tileOptions.x,
+            top:    tileOptions.y,
+            width:  tileOptions.width,
+            height: tileOptions.height}
+        ).addClass("gf_line_"+i).addClass("gf_column_"+j).data("gf", tileOptions);
+        
+        gf.setAnimation(tile, options.animations[animationIndex-1]);
+        
+        div.append(tile);
+    }
+}
+
+gf.updateVisibility = function(div){
+	var options = div.data("gf");
+	
+	if(!options.logic){
+    	var oldVisibility = options.visible;
+        
+        var parent = div.parent();
+        
+        var offset = gf.offset(div);
+    	var newVisibility = gf.tilemapBox(options, {
+        	x:      -offset.x,
+        	y:      -offset.y,
+        	width:  gf.baseDiv.width(),
+        	height: gf.baseDiv.height()
+        });
+        
+        if( oldVisibility.x1 !== newVisibility.x1 ||
+        	oldVisibility.x2 !== newVisibility.x2 ||
+        	oldVisibility.y1 !== newVisibility.y1 ||
+        	oldVisibility.y2 !== newVisibility.y2){
+        		
+    	    div.detach();
+    	    
+    	    // remove old tiles 
+    	    for(var i = oldVisibility.y1; i < newVisibility.y1; i++){
+    	    	for (var j = oldVisibility.x1; j < oldVisibility.x2; j++){
+    	    		div.find(".gf_line_"+i+".gf_column_"+j).remove();
+    	    	}
+    	    }
+    	    for(var i = newVisibility.y2; i < oldVisibility.y2; i++){
+    	    	for (var j = oldVisibility.x1; j < oldVisibility.x2; j++){
+    	    		div.find(".gf_line_"+i+".gf_column_"+j).remove();
+    	    	}
+    	    }
+    	    for(var j = oldVisibility.x1; j < newVisibility.x1; j++){
+    	    	for(var i = oldVisibility.y1; i < oldVisibility.y2; i++){
+    	    		div.find(".gf_line_"+i+".gf_column_"+j).remove();
+    	    	}
+    	    }
+    	    for(var j = newVisibility.x2; j < oldVisibility.x2; j++){
+    	    	for(var i = oldVisibility.y1; i < oldVisibility.y2; i++){
+    	    		div.find(".gf_line_"+i+".gf_column_"+j).remove();
+    	    	}
+    	    }
+    	    // add new tiles
+    	    
+    	    for(var i = oldVisibility.y2; i < newVisibility.y2; i++){
+    	    	for (var j = oldVisibility.x1; j < oldVisibility.x2; j++){
+    	    		createTile(div,i,j,options);
+    	    	}
+    	    }
+    	    for(var i = newVisibility.y1; i < oldVisibility.y1; i++){
+    	    	for (var j = oldVisibility.x1; j < oldVisibility.x2; j++){
+    	    		createTile(div,i,j,options);
+    	    	}
+    	    }
+    	    for(var j = oldVisibility.x2; j < newVisibility.x2; j++){
+    	    	for(var i = oldVisibility.y1; i < oldVisibility.y2; i++){
+    	    		createTile(div,i,j,options);
+    	    	}
+    	    }
+    	    for(var j = newVisibility.x1; j < oldVisibility.x1; j++){
+    	    	for(var i = oldVisibility.y1; i < oldVisibility.y2; i++){
+    	    		createTile(div,i,j,options);
+    	    	}
+    	    }
+    	    div.appendTo(parent);
+    	    
+        }
+        // update visibility
+        options.visible = newVisibility;
+    }
+}
+
+gf.tilemapCollide = function(tilemap, box){
+    var options = tilemap.data("gf");
+    var collisionBox = gf.tilemapBox(options, box);
+    var divs = []
+    
+    for (var i = collisionBox.y1; i < collisionBox.y2; i++){
+        for (var j = collisionBox.x1; j < collisionBox.x2; j++){
+            var index = options.map[i][j];
+            if( index > 0){
+            	if(options.logic) {
+    				divs.push({
+    						type:   index,
+    						x:      j*options.tileWidth,
+    						y:      i*options.tileHeight,
+    						width:  options.tileWidth,
+    						height: options.tileHeight
+    				});
+    			} else {
+	                divs.push(tilemap.find(".gf_line_"+i+".gf_column_"+j));
+    			}
+            }
+        }
+    }
+    return divs;
+}
+
+gf.spriteCollide = function(sprite1, sprite2){
+	var option1 = sprite1.data("gf");
+	var option2 = sprite2.data("gf");
+	
+	var offset1 = gf.offset(sprite1);
+	var offset2 = gf.offset(sprite2);
+	
+	var x = gf.intersect(
+		offset1.x,
+		offset1.x + option1.width,
+		offset2.x,
+		offset2.x + option2.width);
+	var y = gf.intersect(
+		offset1.y,
+		offset1.y + option1.height,
+		offset2.y,
+		offset2.y + option2.height);
+	
+	if (x[0] == x[1] || y[0] == y[1]){
+		return false;
+	} else {
+		return true;
+	}
+}
+
+/**
+ * This function sets or returns the position along the x-axis.
+ **/
+gf.x = function(div,position) {
+    if(position !== undefined) {
+        div.css("left", position);
+        div.data("gf").x = position;
+        
+        // if the div is a tile-map we need to update the visible part
+        if(div.find(".gf_tilemap").size()>0){
+        	div.find(".gf_tilemap").each(function(){gf.updateVisibility($(this))});
+        }
+        if(div.hasClass("gf_tilemap")){
+        	gf.updateVisibility($(div));
+        }
+    } else {
+        return div.data("gf").x; 
+    }
+}
+/**
+ * This function sets or returns the position along the y-axis.
+ **/
+gf.y = function(div,position) {
+    if(position !== undefined) {
+        div.css("top", position); 
+        div.data("gf").y = position;
+        
+        // if the div is a tile-map we need to update the visible part
+        if(div.find(".gf_tilemap").size()>0){
+        	div.find(".gf_tilemap").each(function(){gf.updateVisibility($(this))});
+        }
+        if(div.hasClass("gf_tilemap")){
+        	gf.updateVisibility($(div));
+        }
+    } else {
+        return div.data("gf").y; 
+    }
+}
+
+gf.transform = function(div, options){
+	var gf = div.data("gf");
+	if(options.flipH !== undefined){
+		gf.flipH = options.flipH;
+	}
+	if(options.flipV !== undefined){
+		gf.flipV = options.flipV;
+	}
+	if(options.rotate !== undefined){
+		gf.rotate = options.rotate;
+	}
+	if(options.scale !== undefined){
+		gf.scale = options.scale;
+	}
+	var factorH = gf.flipH ? -1 : 1;
+	var factorV = gf.flipV ? -1 : 1;
+	div.css("transform", "rotate("+gf.rotate+"deg) scale("+(gf.scale*factorH)+","+(gf.scale*factorV)+")");
+}
+
+gf.w = function(div,dimension) {
+    if(dimension) {
+        div.css("width", dimension); 
+        div.data("gf").width = dimension;
+    } else {
+    	if(div.hasClass("gf_tilemap")){
+    		var data = div.data("gf");
+    		return data.width * data.tileWidth;
+    	} else {
+	        return div.data("gf").width;
+    	}
+    }
+}
+
+gf.h = function(div,dimension) {
+    if(dimension) {
+        div.css("height", dimension); 
+        div.data("gf").height = dimension;
+    } else {
+    	if(div.hasClass("gf_tilemap")){
+    		var data = div.data("gf");
+    		return data.height * data.tileHeight;
+    	} else {
+	        return div.data("gf").height;
+    	}
+    }
+}
+
+gf.imagesToPreload = [];
+
+/**
+ * Add an image to the list of image to preload
+ **/
+gf.addImage = function(url) {
+    if ($.inArray(url, gf.imagesToPreload) < 0) {
+        gf.imagesToPreload.push(url);
+    }
+};
+
+gf.callbacks = [];
+
+gf.addCallback = function(callback, rate){
+    gf.callbacks.push({
+        callback: callback,
+        rate: Math.round(rate / gf.baseRate),
+        counter: 0
+    });
+}
+
+gf.refreshGame = function (){
+    
+    // update animations
+    var finishedAnimations = [];
+    
+    for (var i=0; i < gf.animations.length; i++) {
+        
+        var animate = gf.animations[i];
+        
+        animate.counter++;
+        if (animate.counter == animate.animation.rate) {
+            animate.counter = 0;
+            animate.animation.currentFrame++;
+            if(!animate.loop && animate.animation.currentFrame >= animate.animation.numberOfFrames){
+                finishedAnimations.push(i);
+                if(animate.callback){
+                    animate.callback();
+                }
+            } else {
+                animate.animation.currentFrame %= animate.animation.numberOfFrames;
+                gf.setFrame(animate.div, animate.animation);
+            }
+        }
+    }
+    for(var i = finishedAnimations.length-1; i >= 0; i--){
+        gf.animations.splice(finishedAnimations[i], 1);
+    }
+    
+    // execute the callbacks
+    for (var i=0; i < gf.callbacks.length; i++) {
+        var call  = gf.callbacks[i];
+        
+        call.counter++;
+        if (call.counter == call.rate) {
+            var currentTime = (new Date()).getTime();
+            call.counter = 0;
+            call.callback(currentTime - gf.time);
+        }
+    }
+    gf.time = (new Date()).getTime();
+}
+
+/**
+ * Start the preloading of the images.
+ **/
+gf.startGame = function(endCallback, progressCallback) {
+    var images = [];
+    var total = gf.imagesToPreload.length;
+    
+    for (var i = 0; i < total; i++) {
+        var image = new Image();
+        images.push(image);
+        image.src = gf.imagesToPreload[i];
+    }
+    var preloadingPoller = setInterval(function() {
+        var counter = 0;
+        var total = gf.imagesToPreload.length;
+        for (var i = 0; i < total; i++) {
+            if (images[i].complete) {
+                counter++;
+            }
+        }
+        if (counter == total) {
+            //we are done!
+            clearInterval(preloadingPoller);
+            endCallback();
+            setInterval(gf.refreshGame, gf.baseRate);
+            gf.time = (new Date()).getTime();
+        } else {
+            if (progressCallback) {
+                counter++;
+                progressCallback((counter / total) * 100);
+            }
+        }
+    }, 100);
+};
+
+gf.keyboard = [];
+// keyboard state handler
+ $(document).keydown(function(event){
+    gf.keyboard[event.keyCode] = true;
+});
+$(document).keyup(function(event){
+    gf.keyboard[event.keyCode] = false;
+});
+
+
+
+        </script>
+		<script>
+        var enemies = [];
+var slimeAnim = {
+    stand: new gf.animation({
+        url: "slime.png"
+    }),
+    walk: new gf.animation({
+        url: "slime.png",
+        width:  43, 
+        numberOfFrames: 2,
+        rate: 90
+    }),
+    dead: new gf.animation({
+        url: "slime.png",
+        offsetx: 86
+    }),
+
+}
+var flyAnim = {
+    stand: new gf.animation({
+        url: "fly.png"
+    }),
+    walk: new gf.animation({
+        url: "fly.png",
+        width:  69, 
+        numberOfFrames: 2,
+        rate: 90
+    }),
+    dead: new gf.animation({
+        url: "fly.png",
+        offsetx: 138
+    }),
+
+}
+    
+var Slime = function() {
+    this.init = function(div, x1, x2, anim) {
+        this.div = div;
+        this.x1 = x1;
+        this.x2 = x2;
+        this.anim = anim;
+        this.direction = 1;
+        this.speed     = 5;
+        this.dead      = false;
+        
+        gf.transform(div, {flipH: true});
+        gf.setAnimation(div, anim.walk, true);
+    };
+    
+    this.update = function(){
+        if(this.dead){
+            this.dies();
+        } else {
+            var position = gf.x(this.div);
+            if (position < this.x1){
+                this.direction = 1;
+                gf.transform(this.div, {flipH: true});
+            }
+            if (position > this.x2){
+                this.direction = -1;
+                gf.transform(this.div, {flipH: false});
+            }
+            gf.x(this.div, gf.x(this.div) + this.direction * this.speed);
+        }
+    }
+    this.kill = function(){
+        this.dead = true;
+        gf.setAnimation(this.div, this.anim.dead);
+    }
+    this.dies = function(){}
+};
+var Fly = function() {}
+Fly.prototype = new Slime();
+Fly.prototype.dies = function(){
+    gf.y(this.div, gf.y(this.div) + 5);
+}
+
+$(function() {
+    gf.initialize({baseDiv: $("#mygame")});
+    
+    var levels = [
+        {tiles: "level1.json", enemies: "level1.js"},
+        {tiles: "level2.json", enemies: "level2.js"},
+        {tiles: "level3.json", enemies: "level1.js"},
+        {tiles: "level4.json", enemies: "level1.js"}
+    ];
+    
+    var currentLevel = 0;
+    
+    var loadNextLevel = function(group){
+        var level = levels[currentLevel++];
+        // clear old level
+        $("#level0").remove();
+        $("#level1").remove();
+        for(var i = 0; i < enemies.length; i++){
+            enemies[i].div.remove();
+        }
+        enemies = [];
+        
+        // create the new level
+        
+        // first the tiles
+        gf.importTiled(level.tiles, group, "level");
+        
+        // then the enemies
+        $.getScript(level.enemies);
+        /*$.getScript(level.enemies)
+            .done(function(script, textStatus) {
+              console.log( textStatus );
+            })
+            .fail(function(jqxhr, settings, exception) {
+                console.log("fuck: "+exception);
+            });*/
+        
+        // finaly return the div holdoing the tilemap
+        return $("#level1");
+    }
+    
+    var playerAnim = {
+        stand: new gf.animation({
+            url: "player.png",
+            offsetx: 75
+        }),
+        walk:  new gf.animation({
+            url:    "player.png",
+            offset: 150,
+            width:  75, 
+            numberOfFrames: 10,
+            rate: 90
+        }),
+        jump:  new gf.animation({
+            url: "player.png",
+            offsetx: 900
+        })
+    };
+    
+    var backgroundFrontAnim = new gf.animation({
+        url: "background_front.png"
+    });
+    var backgroundBackAnim = new gf.animation({
+        url: "background_back.png"
+    });
+                 
+    var tilemap, container;
+    
+    var player = new (function(){
+        var acceleration = 9;
+        var speed = 20;
+        var status = "stand";
+        var horizontalMove = 0;
+        
+        this.update = function () {
+            if(status == "dead"){
+                var newY = gf.y(this.div) + 2;
+                if(newY > 480 + 93 - 100){
+                    gf.x(this.div, 0);
+                    gf.y(this.div, 0);
+                    status = "stand";
+                    gf.setAnimation(this.div, playerAnim.jump);
+                } else {
+                    gf.y(this.div, newY);
+                }
+                
+            } else if (status == "finished") {
+                tilemap         = loadNextLevel(group);
+                gf.x(this.div, 0);
+                gf.y(this.div, 0);
+                status = "stand";
+                gf.setAnimation(this.div, playerAnim.jump);
+                
+            } else {
+                var delta = 30;
+                speed = Math.min(100,Math.max(-100,speed + acceleration * delta / 100.0)); 
+                var newY = gf.y(this.div) + speed * delta / 100.0;
+                var newX = gf.x(this.div) + horizontalMove;
+                var newW = gf.w(this.div);
+                var newH = gf.h(this.div);            
+                
+                var collisions = gf.tilemapCollide(tilemap, {x: newX, y: newY, width: newW, height: newH});
+                var i = 0;
+                while (i < collisions.length > 0) {
+                    var collision = collisions[i];
+                    i++;
+                    var collisionBox = {
+                        x1: collision.x,
+                        y1: collision.y,
+                        x2: collision.x + collision.width,
+                        y2: collision.y + collision.height
+                    };
+    
+                    // react differently to each kind of tile
+                    switch (collision.type) {
+                        case 1:
+                            // collision tiles
+                            var x = gf.intersect(newX, newX + newW, collisionBox.x1,collisionBox.x2);
+                            var y = gf.intersect(newY, newY + newH, collisionBox.y1,collisionBox.y2);
+                            
+                            var diffx = (x[0] === newX)? x[0]-x[1] : x[1]-x[0];
+                            var diffy = (y[0] === newY)? y[0]-y[1] : y[1]-y[0];
+                            if (Math.abs(diffx) > Math.abs(diffy)){
+                                // displace along the y axis
+                                 newY -= diffy;
+                                 speed = 0;
+                                 if(status=="jump" && diffy > 0){
+                                     status="stand";
+                                     gf.setAnimation(this.div, playerAnim.stand);
+                                 }
+                            } else {
+                                // displace along the x axis
+                                newX -= diffx;
+                            }
+                            break;
+                        case 2:
+                            // deadly tiles
+                            // collision tiles
+                            var y = gf.intersect(newY, newY + newH, collisionBox.y1,collisionBox.y2);
+                            var diffy = (y[0] === newY)? y[0]-y[1] : y[1]-y[0];
+                            if(diffy > 40){
+                                status = "dead";
+                            }
+                            break;
+                        case 3: 
+                            // end of level tiles
+                            status = "finished"; 
+                            break;
+                    }
+                    
+                }
+                if(newX < 0){
+                    newX = 0;
+                } /*else if (x > gf.w(tilemap)-gf.w(x)){
+                    newX = gf.w(tilemap)-gf.w(x);
+                }*/
+                gf.x(this.div, newX);
+                gf.y(this.div, newY);
+                horizontalMove = 0;
+            }
+        };
+        
+        this.left = function (){
+            switch (status) {
+                case "stand":
+                    gf.setAnimation(this.div, playerAnim.walk, true);
+                    status = "walk";
+                    horizontalMove -= 7;
+                    break;
+                case "jump":
+                    horizontalMove -= 5;
+                    break;
+                case "walk":
+                    horizontalMove -= 7;
+                    break;
+            }
+            gf.transform(this.div, {flipH: true});
+        };
+        
+        this.right = function (){
+            switch (status) {
+                case "stand":
+                    gf.setAnimation(this.div, playerAnim.walk, true);
+                    status = "walk";
+                    horizontalMove += 7;
+                    break;
+                case "jump":
+                    horizontalMove += 5;
+                    break;
+                case "walk":
+                    horizontalMove += 7;
+                    break;
+            }
+            gf.transform(this.div, {flipH: false});
+        };
+        
+        this.jump  = function (){
+            switch (status) {
+                case "stand":
+                case "walk":
+                    status = "jump";
+                    speed = -60;
+                    gf.setAnimation(this.div, playerAnim.jump);
+                    break;
+            }
+        };
+        
+        this.idle  = function (){
+            switch (status) {
+                case "walk":
+                    status = "stand";
+                    gf.setAnimation(this.div, playerAnim.stand);
+                    break;
+            }
+        };
+    });
+    
+    
+    var initialize = function() {
+        $("#mygame").append("<div id='container' style='display: none; width: 640px; height: 480px;'>");
+        container       = $("#container");
+        backgroundBack  = gf.addSprite(container,"backgroundBack",{width: 640, height: 480});
+        backgroundFront = gf.addSprite(container,"backgroundFront",{width: 640, height: 480});
+        group           = gf.addGroup(container,"group");
+        
+        tilemap         = loadNextLevel(group);
+        
+        player.div      = gf.addSprite(group,"player",{width: 74, height: 93});
+		
+        gf.setAnimation(player.div, playerAnim.stand);
+        gf.setAnimation(backgroundBack, backgroundBackAnim);
+        gf.setAnimation(backgroundFront, backgroundFrontAnim);
+        
+        $("#startButton").remove();
+        container.css("display", "block");
+    }
+    
+    var gameLoop = function() {
+        
+        var idle = true;
+        if(gf.keyboard[37]){ //left arrow
+            player.left();
+            idle = false;
+        }
+		if(gf.keyboard[70]){ //left f Nokia qwerty
+            player.left();
+            idle = false;
+        }
+		if(gf.keyboard[38]){ //up arrow
+            player.jump();
+            idle = false;
+        }
+		if(gf.keyboard[84]){ //up t Nokia qwerty
+            player.jump();
+            idle = false;
+        }	
+        if(gf.keyboard[39]){ //right arrow
+            player.right();
+            idle = false;
+        }
+		if(gf.keyboard[72]){ //right h Nokia qwerty
+            player.right();
+            idle = false;
+        }
+        if(idle){
+            player.idle();
+        }
+        
+        player.update();
+        for (var i = 0; i < enemies.length; i++){
+        	enemies[i].update();
+        	if (gf.spriteCollide(player.div, enemies[i].div)){
+        		enemies[i].kill();
+        	}
+        }
+        
+        
+        var margin = {x: 200, y: (600-192)/2}; 
+        var playerPos = {x: gf.x(player.div), y: gf.y(player.div)};
+        
+        var offset = margin.x-Math.min(Math.max(playerPos.x, margin.x), gf.w(tilemap)-640+margin.x); 
+        gf.x(group, offset);
+        $("#backgroundFront").css("background-position",""+(offset * 0.66)+"px 0px");
+        $("#backgroundBack").css("background-position",""+(offset * 0.33)+"px 0px");
+    };
+    gf.addCallback(gameLoop, 30);
+    
+	$(document).keydown(function(event){
+		if(gf.keyboard[83]){ //up arrow
+           gf.startGame(initialize);
+        }
+		
+	});
+});
+        </script>
+	</head>
+	<body>
+		<div id="mygame" style="position: relative; width: 640px; height: 480px; overflow: hidden; background: #5e81a1; -webkit-transform:translateZ(0); -moz-transform:translateZ(0); transform:matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)">
+			<img id="startButton" src="start.png" />
+		</div>
+	</body>
+</html>
